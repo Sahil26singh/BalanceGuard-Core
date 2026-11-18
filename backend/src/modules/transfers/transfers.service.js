@@ -2,7 +2,7 @@ import { query, withTransaction } from '../../config/db.js';
 import { logger } from '../../config/logger.js';
 import { env } from '../../config/env.js';
 import { AppError } from '../../utils/errors.js';
-import { postLedgerEntries } from '../ledger/ledger.service.js';
+import { postLedgerEntries, lockAccounts } from '../ledger/ledger.service.js';
 import { claimOrReplay, resolveIdempotencyKey } from '../idempotency/idempotency.service.js';
 import { getSystemAccountId } from '../accounts/accounts.service.js';
 import { templateExplanation } from '../risk/risk.explainer.js';
@@ -56,6 +56,11 @@ export async function executeTransfer({
     const replay = await claimOrReplay(client, idempotency);
     if (replay) return { ...replay, created: false };
 
+    // When not held, lock the accounts in sorted order BEFORE inserting the transfer.
+    // This eliminates deadlocks between concurrent transfers touching the same accounts,
+    // where foreign-key verification (KEY SHARE) and row updates (EXCLUSIVE) would otherwise interleave.
+    const lockedRows = hold ? null : await lockAccounts(client, [sourceAccountId, destinationAccountId]);
+
     const transfer = await createTransfer(client, {
       key,
       sourceAccountId,
@@ -94,7 +99,8 @@ export async function executeTransfer({
       destinationAccountId,
       amount,
       actorId,
-      actorRole
+      actorRole,
+      lockedRows
     });
     const completed = await changeTransferStatus(client, transfer.id, STATUS.PENDING, STATUS.COMPLETED);
 
@@ -129,6 +135,7 @@ export async function initiatePayout({ idempotency, sourceAccountId, amount, sho
     if (replay) return { ...replay, created: false };
 
     const clearingAccountId = await getSystemAccountId(client, 'PLATFORM_CLEARING');
+    const lockedRows = await lockAccounts(client, [sourceAccountId, clearingAccountId]);
     const transfer = await createTransfer(client, {
       key,
       sourceAccountId,
@@ -145,7 +152,8 @@ export async function initiatePayout({ idempotency, sourceAccountId, amount, sho
       destinationAccountId: clearingAccountId,
       amount,
       actorId,
-      actorRole
+      actorRole,
+      lockedRows
     });
 
     // Write to payout_outbox inside the exact same database transaction

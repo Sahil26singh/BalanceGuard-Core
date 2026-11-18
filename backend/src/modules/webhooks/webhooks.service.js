@@ -2,7 +2,7 @@ import { query, withTransaction } from '../../config/db.js';
 import { logger } from '../../config/logger.js';
 import { AppError } from '../../utils/errors.js';
 import { enqueueWebhookJob } from '../../jobs/queue.js';
-import { postLedgerEntries } from '../ledger/ledger.service.js';
+import { postLedgerEntries, lockAccounts } from '../ledger/ledger.service.js';
 import { recordAuditEvent } from '../audit/audit.service.js';
 import { getSystemAccountId } from '../accounts/accounts.service.js';
 import { createTransfer, changeTransferStatus } from '../transfers/transfers.queries.js';
@@ -82,6 +82,7 @@ const handlers = {
     }
 
     const settlementAccountId = await getSystemAccountId(client, 'PROVIDER_SETTLEMENT');
+    const lockedRows = await lockAccounts(client, [settlementAccountId, customerWalletId]);
 
     const transfer = await createTransfer(client, {
       key: topupIdempotencyKey(providerPaymentId || providerEventId),
@@ -96,7 +97,8 @@ const handlers = {
       transferId: transfer.id,
       sourceAccountId: settlementAccountId,
       destinationAccountId: customerWalletId,
-      amount: validAmount
+      amount: validAmount,
+      lockedRows
     });
     await changeTransferStatus(client, transfer.id, STATUS.PENDING, STATUS.COMPLETED);
 

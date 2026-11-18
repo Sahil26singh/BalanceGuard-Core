@@ -1,7 +1,7 @@
 import { withTransaction } from '../../config/db.js';
 import { logger } from '../../config/logger.js';
 import { AppError } from '../../utils/errors.js';
-import { postLedgerEntries } from '../ledger/ledger.service.js';
+import { postLedgerEntries, lockAccounts } from '../ledger/ledger.service.js';
 import { claimOrReplay, resolveIdempotencyKey } from '../idempotency/idempotency.service.js';
 import { recordAuditEvent } from '../audit/audit.service.js';
 import { createTransfer, changeTransferStatus } from '../transfers/transfers.queries.js';
@@ -71,6 +71,9 @@ export async function executeRefund({
 
     const newParentStatus = totalRefunded === originalAmount ? STATUS.REFUNDED : STATUS.PARTIALLY_REFUNDED;
 
+    // Lock accounts in ascending ID order before creating the transfer to avoid foreign-key lock conflicts
+    const lockedRows = await lockAccounts(client, [parent.destination_account_id, parent.source_account_id]);
+
     // The refund moves money back the other way: recipient -> original sender
     const refund = await createTransfer(client, {
       key,
@@ -90,7 +93,8 @@ export async function executeRefund({
       destinationAccountId: parent.source_account_id,
       amount: refundAmount,
       actorId,
-      actorRole
+      actorRole,
+      lockedRows
     });
 
     const completedRefund = await changeTransferStatus(client, refund.id, STATUS.PENDING, STATUS.COMPLETED);

@@ -4,6 +4,20 @@ import { AppError } from '../../utils/errors.js';
 
 const ENTRY_COLUMNS = 'id, transfer_id, account_id, entry_type, amount, balance_after, created_at';
 
+/**
+ * Lock accounts in strict ascending ID order. Must be called inside a transaction.
+ * Acquiring this before any foreign key insertions prevents deadlocks between concurrent
+ * transactions touching the same accounts.
+ */
+export async function lockAccounts(client, accountIds) {
+  const sortedIds = [...new Set(accountIds)].sort();
+  const { rows } = await client.query(
+    'SELECT id, account_type, balance FROM accounts WHERE id = ANY($1::uuid[]) ORDER BY id ASC FOR UPDATE;',
+    [sortedIds]
+  );
+  return rows;
+}
+
 async function insertEntry(client, { transferId, accountId, entryType, amount, balanceAfter }) {
   const { rows } = await client.query(
     `INSERT INTO ledger_entries (transfer_id, account_id, entry_type, amount, balance_after)
@@ -24,7 +38,7 @@ async function insertEntry(client, { transferId, accountId, entryType, amount, b
  */
 export async function postLedgerEntries(
   client,
-  { transferId, sourceAccountId, destinationAccountId, amount, actorId = null, actorRole = null }
+  { transferId, sourceAccountId, destinationAccountId, amount, actorId = null, actorRole = null, lockedRows = null }
 ) {
   const value = BigInt(amount);
 
@@ -35,10 +49,7 @@ export async function postLedgerEntries(
     throw new AppError(400, 'IDENTICAL_ACCOUNTS', 'Source and destination accounts must be different');
   }
 
-  const { rows } = await client.query(
-    'SELECT id, account_type, balance FROM accounts WHERE id IN ($1, $2) ORDER BY id ASC FOR UPDATE;',
-    [sourceAccountId, destinationAccountId]
-  );
+  const rows = lockedRows || (await lockAccounts(client, [sourceAccountId, destinationAccountId]));
   if (rows.length < 2) {
     throw new AppError(404, 'ACCOUNT_NOT_FOUND', 'One or both accounts were not found');
   }
@@ -55,14 +66,17 @@ export async function postLedgerEntries(
   const sourceBalanceAfter = sourceBalance - value;
   const destinationBalanceAfter = BigInt(destination.balance) + value;
 
-  await client.query('UPDATE accounts SET balance = $1, version = version + 1, updated_at = NOW() WHERE id = $2;', [
-    sourceBalanceAfter.toString(),
-    sourceAccountId
-  ]);
-  await client.query('UPDATE accounts SET balance = $1, version = version + 1, updated_at = NOW() WHERE id = $2;', [
-    destinationBalanceAfter.toString(),
-    destinationAccountId
-  ]);
+  const updates = [
+    { id: sourceAccountId, balanceAfter: sourceBalanceAfter },
+    { id: destinationAccountId, balanceAfter: destinationBalanceAfter }
+  ].sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const u of updates) {
+    await client.query('UPDATE accounts SET balance = $1, version = version + 1, updated_at = NOW() WHERE id = $2;', [
+      u.balanceAfter.toString(),
+      u.id
+    ]);
+  }
 
   const debitEntry = await insertEntry(client, { transferId, accountId: sourceAccountId, entryType: 'DEBIT', amount: value, balanceAfter: sourceBalanceAfter });
   const creditEntry = await insertEntry(client, { transferId, accountId: destinationAccountId, entryType: 'CREDIT', amount: value, balanceAfter: destinationBalanceAfter });

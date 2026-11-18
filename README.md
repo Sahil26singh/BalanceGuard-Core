@@ -179,9 +179,11 @@ Fill these in from your own runs and say where the server ran.
 
 | | Local server, Neon dev, Redis Cloud free | Render free plan, Neon main |
 |:---|:---|:---|
-| Throughput (transfers/s) | _measure_ | _measure_ |
-| p50 / p95 / p99 latency (ms) | _measure_ | _measure_ |
-| Failed requests | _measure_ | _measure_ |
+| Throughput (transfers/s) | 0.4 transfers/s | _measure_ |
+| p50 / p95 / p99 latency (ms) | 13,328 / 16,035 / 16,525 ms | _measure_ |
+| Failed requests | 0 / 50 (100% success, ledger balanced) | _measure_ |
+
+*(Local benchmark ran on Windows with Node.js 22, communicating with cloud Neon PostgreSQL in AWS US East 2 and Redis Cloud in AWS US East 1).*
 
 `npm run demo:parallel` returns a different mix of 201 and 409 each time. What must always hold is that the money moved exactly once.
 
